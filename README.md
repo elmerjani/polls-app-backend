@@ -1,14 +1,48 @@
-# Welcome to your CDK TypeScript project
+# Polling App – Backend
 
-This is a blank project for CDK development with TypeScript.
+This is the **serverless backend** for the Polling App.  
+It is built using **AWS Lambda**, **DynamoDB**, and **API Gateway**, and deployed using **AWS CDK (TypeScript)**.
 
-The `cdk.json` file tells the CDK Toolkit how to execute your app.
+The backend supports:
+- REST APIs for poll management  
+- WebSocket APIs for real-time voting updates  
+- Authentication via **Amazon Cognito**  
 
-## Useful commands
+---
 
-* `npm run build`   compile typescript to js
-* `npm run watch`   watch for changes and compile
-* `npm run test`    perform the jest unit tests
-* `npx cdk deploy`  deploy this stack to your default AWS account/region
-* `npx cdk diff`    compare deployed stack with current state
-* `npx cdk synth`   emits the synthesized CloudFormation template
+## 🚀 Prerequisites
+
+Before running or deploying the backend, make sure you have:
+
+1. An **AWS account**.  
+2. [AWS CLI](https://aws.amazon.com/cli/) installed and configured with a default profile that has permissions to create resources.  
+3. An **Amazon Cognito User Pool** created (to be used for authentication).  
+
+---
+
+## ⚙️ Environment Variables
+
+Create a `.env` file at the root of the backend project with the following variables:
+
+```env
+COGNITO_USER_POOL_ID=
+FRONTEND_URL=
+FRONTEND_URL_LOCAL=http://localhost:5173/
+```
+## Install & Deploy
+
+### Install dependencies:
+
+```bash
+npm install
+```
+
+
+### Deploy the backend using AWS CDK:
+
+```bash
+cdk deploy
+```
+
+
+CDK will create all necessary resources: Lambda functions, API Gateway (REST + WebSocket), DynamoDB tables, and IAM roles.
