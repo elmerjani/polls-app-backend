@@ -25,6 +25,22 @@ export class VotingAppBackendStack extends cdk.Stack {
       writeCapacity: 5,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
+    pollsTable.addGlobalSecondaryIndex({
+      indexName: "PollsByCreatedAt-index",
+      partitionKey: { name: "GSI1PK", type: dynamodb.AttributeType.STRING },
+      sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
+      projectionType: dynamodb.ProjectionType.ALL,
+      readCapacity: 5,
+      writeCapacity: 5,
+    });
+    pollsTable.addGlobalSecondaryIndex({
+      indexName: "PollsByOwner-index",
+      partitionKey: { name: "GSI2PK", type: dynamodb.AttributeType.STRING }, // OWNER#<email>
+      sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING }, // for sorting
+      projectionType: dynamodb.ProjectionType.ALL,
+      readCapacity: 5,
+      writeCapacity: 5,
+    });
 
     // Table to store active WebSocket connections
     const connectionsTable = new dynamodb.Table(this, "ConnectionsTable", {
@@ -202,6 +218,16 @@ export class VotingAppBackendStack extends cdk.Stack {
       "GET",
       new apigateway.LambdaIntegration(managePollsLambda),
       { authorizer, authorizationType: apigateway.AuthorizationType.COGNITO }
+    );
+
+    const myPolls = api.root.addResource("myPolls");
+    myPolls.addMethod(
+      "GET",
+      new apigateway.LambdaIntegration(managePollsLambda),
+      {
+        authorizer,
+        authorizationType: apigateway.AuthorizationType.COGNITO,
+      }
     );
     const polls = api.root.addResource("polls");
     const poll = polls.addResource("{pollId}");

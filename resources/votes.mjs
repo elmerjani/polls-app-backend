@@ -68,11 +68,11 @@ export const disconnectHandler = async (event) => {
   return { statusCode: 200 };
 };
 
+
 export const messagesHandler = async (event) => {
   try {
     const body = JSON.parse(event.body);
     const { pollId, optionId } = body;
-
     const connectionId = event.requestContext.connectionId;
 
     // 1️⃣ Get user info from CONNECTIONS_TABLE
@@ -88,6 +88,7 @@ export const messagesHandler = async (event) => {
     }
 
     const { email: userId, name: userName } = conn.Item.user;
+    const createdAt = new Date().toISOString();
 
     // 2️⃣ Check if user has already voted
     const previousVote = await ddbDocClient.send(
@@ -97,22 +98,19 @@ export const messagesHandler = async (event) => {
       })
     );
 
-    // 3️⃣ Remove old vote if exists
+    // 3️⃣ If user voted before, decrement previous option count
     if (previousVote.Item) {
       await ddbDocClient.send(
         new UpdateCommand({
           TableName: POLLS_TABLE,
-          Key: {
-            PK: `POLL#${pollId}`,
-            SK: `OPTION#${previousVote.Item.optionId}`,
-          },
+          Key: { PK: `POLL#${pollId}`, SK: `OPTION#${previousVote.Item.optionId}` },
           UpdateExpression: "SET votesCount = votesCount - :dec",
           ExpressionAttributeValues: { ":dec": 1 },
         })
       );
     }
 
-    // 4️⃣ Add new vote
+    // 4️⃣ Increment new option votesCount
     await ddbDocClient.send(
       new UpdateCommand({
         TableName: POLLS_TABLE,
@@ -122,7 +120,7 @@ export const messagesHandler = async (event) => {
       })
     );
 
-    // 5️⃣ Persist user's vote
+    // 5️⃣ Persist user's vote using PutCommand ✅ ensures createdAt is stored
     await ddbDocClient.send(
       new PutCommand({
         TableName: POLLS_TABLE,
@@ -131,6 +129,7 @@ export const messagesHandler = async (event) => {
           SK: `VOTE#${userId}`,
           optionId,
           user: { email: userId, name: userName },
+          createdAt, // ✅ now guaranteed to persist
         },
       })
     );
@@ -153,7 +152,7 @@ export const messagesHandler = async (event) => {
       votesCount: opt.votesCount,
     }));
 
-    // 8️⃣ Broadcast updated poll
+    // 7️⃣ Broadcast updated poll to all connections
     const connections = await ddbDocClient.send(
       new ScanCommand({ TableName: CONNECTIONS_TABLE })
     );
@@ -172,6 +171,7 @@ export const messagesHandler = async (event) => {
                 pollId,
                 options,
                 user: { name: userName, email: userId },
+                createdAt,
               }),
             })
           );

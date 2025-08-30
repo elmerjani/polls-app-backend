@@ -3,8 +3,7 @@ import {
   DynamoDBDocumentClient,
   QueryCommand,
   BatchWriteCommand,
-  ScanCommand,
-  GetCommand
+  GetCommand,
 } from "@aws-sdk/lib-dynamodb";
 import { v4 as uuidv4 } from "uuid";
 
@@ -60,6 +59,8 @@ export const createPollHandler = async (event) => {
               name: userName,
             },
             createdAt,
+            GSI1PK: "POLL",
+            GSI2PK: `OWNER#${userEmail}`,
           },
         },
       },
@@ -136,6 +137,13 @@ export const getPollHandler = async (event) => {
       text: opt.text,
       votesCount: opt.votesCount,
     }));
+    const votesResult = result.Items.filter((i) =>
+      i.SK.startsWith("VOTE#")
+    ).map((vote) => ({
+      user: vote.user,
+      optionId: vote.optionId,
+      createdAt: vote.createdAt,
+    }));
 
     const poll = {
       pollId: pollItem.pollId,
@@ -143,6 +151,7 @@ export const getPollHandler = async (event) => {
       createdAt: pollItem.createdAt,
       owner: pollItem.owner,
       options,
+      votes: votesResult,
     };
 
     return {
@@ -161,25 +170,34 @@ export const getPollHandler = async (event) => {
   }
 };
 
-export const listPollsHandler = async () => {
+export const listPollsHandler = async (event) => {
   try {
-    // 1️⃣ Scan to get all polls (SK = "POLL")
-    const result = await ddbDocClient.send(
-      new ScanCommand({
+    // 👇 Extract pagination & sorting params from querystring
+    const params = event.queryStringParameters || {};
+    const limit = parseInt(params.limit || "10", 10);
+    const sortBy = "createdAt";
+    const lastKey = params.lastKey ? JSON.parse(params.lastKey) : undefined;
+
+    const indexName = "PollsByCreatedAt-index";
+
+    // 1️⃣ Query polls from GSI
+    const pollsResult = await ddbDocClient.send(
+      new QueryCommand({
         TableName: POLLS_TABLE,
-        FilterExpression: "SK = :sk",
-        ExpressionAttributeValues: { ":sk": "POLL" },
+        IndexName: indexName,
+        KeyConditionExpression: "GSI1PK = :pk",
+        ExpressionAttributeValues: {
+          ":pk": "POLL",
+        },
+        Limit: limit,
+        ExclusiveStartKey: lastKey,
+        ScanIndexForward: false,
       })
     );
 
-    if (!result.Items || result.Items.length === 0) {
-      return { statusCode: 200, body: JSON.stringify([]) };
-    }
-
     const polls = [];
 
-    // 2️⃣ For each poll, query its options
-    for (const pollItem of result.Items) {
+    for (const pollItem of pollsResult.Items) {
       const pollId = pollItem.pollId;
 
       const optionsResult = await ddbDocClient.send(
@@ -211,7 +229,10 @@ export const listPollsHandler = async () => {
 
     return {
       statusCode: 200,
-      body: JSON.stringify(polls),
+      body: JSON.stringify({
+        items: polls,
+        lastKey: pollsResult.LastEvaluatedKey || null,
+      }),
     };
   } catch (error) {
     console.error("Error listing polls:", error);
@@ -228,23 +249,28 @@ export const listPollsHandler = async () => {
 export const authListPolls = async (event) => {
   try {
     const userEmail = event.requestContext.authorizer?.claims?.email;
-    
 
-    // 1️⃣ Scan polls (SK = "POLL")
-    const result = await ddbDocClient.send(
-      new ScanCommand({
+    const params = event.queryStringParameters || {};
+    const limit = parseInt(params.limit || "10", 10);
+    const lastKey = params.lastKey ? JSON.parse(params.lastKey) : undefined;
+
+    const indexName = "PollsByCreatedAt-index";
+    const pollsResult = await ddbDocClient.send(
+      new QueryCommand({
         TableName: POLLS_TABLE,
-        FilterExpression: "SK = :sk",
-        ExpressionAttributeValues: { ":sk": "POLL" },
+        IndexName: indexName,
+        KeyConditionExpression: "GSI1PK = :pk",
+        ExpressionAttributeValues: { ":pk": "POLL" },
+        Limit: limit,
+        ExclusiveStartKey: lastKey,
+        ScanIndexForward: false,
       })
     );
 
     const polls = [];
 
-    for (const pollItem of result.Items) {
+    for (const pollItem of pollsResult.Items) {
       const pollId = pollItem.pollId;
-
-      // 2️⃣ Query poll options
       const optionsResult = await ddbDocClient.send(
         new QueryCommand({
           TableName: POLLS_TABLE,
@@ -255,7 +281,6 @@ export const authListPolls = async (event) => {
           },
         })
       );
-      
 
       const options =
         optionsResult.Items.map((opt) => ({
@@ -263,25 +288,30 @@ export const authListPolls = async (event) => {
           text: opt.text,
           votesCount: opt.votesCount,
         })) || [];
-       
-      // 3️⃣ Get user vote (userOption)
       const userVote = await ddbDocClient.send(
         new GetCommand({
           TableName: POLLS_TABLE,
           Key: { PK: `POLL#${pollId}`, SK: `VOTE#${userEmail}` },
         })
       );
+
       polls.push({
         pollId,
         question: pollItem.question,
         createdAt: pollItem.createdAt,
         owner: pollItem.owner,
         options,
-        userOption: userVote?.Item?.optionId, // undefined if user didn't vote
+        userOption: userVote?.Item?.optionId,
       });
     }
 
-    return { statusCode: 200, body: JSON.stringify(polls) };
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        items: polls,
+        lastKey: pollsResult.LastEvaluatedKey || null,
+      }),
+    };
   } catch (err) {
     console.error("Error fetching authenticated polls:", err);
     return { statusCode: 500, body: JSON.stringify({ error: err.message }) };
@@ -305,19 +335,28 @@ export const authGetPoll = async (event) => {
     );
 
     if (!result.Items || result.Items.length === 0) {
-      return { statusCode: 404, body: JSON.stringify({ message: "Poll not found" }) };
+      return {
+        statusCode: 404,
+        body: JSON.stringify({ message: "Poll not found" }),
+      };
     }
 
     const pollItem = result.Items.find((i) => i.SK === "POLL");
 
-    const options = result.Items
-      .filter((i) => i.SK.startsWith("OPTION#"))
-      .map((opt) => ({
+    const options = result.Items.filter((i) => i.SK.startsWith("OPTION#")).map(
+      (opt) => ({
         id: opt.optionId,
         text: opt.text,
         votesCount: opt.votesCount,
-      }));
-
+      })
+    );
+    const votesResult = result.Items.filter((i) =>
+      i.SK.startsWith("VOTE#")
+    ).map((vote) => ({
+      user: vote.user,
+      optionId: vote.optionId,
+      createdAt: vote.createdAt,
+    }));
     const userVote = await ddbDocClient.send(
       new GetCommand({
         TableName: POLLS_TABLE,
@@ -331,6 +370,7 @@ export const authGetPoll = async (event) => {
       createdAt: pollItem.createdAt,
       owner: pollItem.owner,
       options,
+      votes: votesResult,
       userOption: userVote?.Item?.optionId,
     };
 
@@ -341,6 +381,164 @@ export const authGetPoll = async (event) => {
   }
 };
 
+export const deletePollHandler = async (event) => {
+  try {
+    const userId = event.requestContext.authorizer.claims.email;
+    const pollId = event.pathParameters.pollId;
+
+    // 1️⃣ Fetch poll
+    const poll = await ddbDocClient.send(
+      new GetCommand({
+        TableName: POLLS_TABLE,
+        Key: { PK: `POLL#${pollId}`, SK: "POLL" },
+      })
+    );
+
+    if (!poll.Item) {
+      return {
+        statusCode: 404,
+        body: JSON.stringify({ message: "Poll not found" }),
+      };
+    }
+
+    // 2️⃣ Check ownership
+    if (poll.Item.owner.email !== userId) {
+      return {
+        statusCode: 403,
+        body: JSON.stringify({ message: "You are not the owner of this poll" }),
+      };
+    }
+
+    // 3️⃣ Query all items belonging to poll (options + votes + poll)
+    const pollItems = await ddbDocClient.send(
+      new QueryCommand({
+        TableName: POLLS_TABLE,
+        KeyConditionExpression: "PK = :pk",
+        ExpressionAttributeValues: { ":pk": `POLL#${pollId}` },
+      })
+    );
+
+    if (!pollItems.Items || pollItems.Items.length === 0) {
+      return {
+        statusCode: 404,
+        body: JSON.stringify({ message: "No items found for this poll" }),
+      };
+    }
+
+    // 4️⃣ Batch delete all items
+    const deleteRequests = pollItems.Items.map((item) => ({
+      DeleteRequest: {
+        Key: { PK: item.PK, SK: item.SK },
+      },
+    }));
+
+    // DynamoDB BatchWrite supports max 25 items per call
+    while (deleteRequests.length > 0) {
+      const chunk = deleteRequests.splice(0, 25);
+      await ddbDocClient.send(
+        new BatchWriteCommand({
+          RequestItems: {
+            [POLLS_TABLE]: chunk,
+          },
+        })
+      );
+    }
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({ message: "Poll deleted successfully" }),
+    };
+  } catch (err) {
+    console.error("Error deleting poll:", err);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({
+        message: "Failed to delete poll",
+        error: err.message,
+      }),
+    };
+  }
+};
+
+export const getMyPollsHandler = async (event) => {
+  try {
+    const userEmail = event.requestContext.authorizer?.claims?.email;
+    if (!userEmail) {
+      return { statusCode: 401, body: JSON.stringify({ message: "Unauthorized" }) };
+    }
+
+    const params = event.queryStringParameters || {};
+    const limit = parseInt(params.limit || "10", 10);
+    const lastKey = params.lastKey ? JSON.parse(params.lastKey) : undefined;
+
+    // Query polls owned by this user
+    const pollsResult = await ddbDocClient.send(
+      new QueryCommand({
+        TableName: POLLS_TABLE,
+        IndexName: "PollsByOwner-index",
+        KeyConditionExpression: "GSI2PK = :owner",
+        ExpressionAttributeValues: { ":owner": `OWNER#${userEmail}` },
+        Limit: limit,
+        ExclusiveStartKey: lastKey,
+        ScanIndexForward: false, // newest first
+      })
+    );
+
+    const polls = [];
+    for (const pollItem of pollsResult.Items) {
+      const pollId = pollItem.pollId;
+
+      // Fetch options
+      const optionsResult = await ddbDocClient.send(
+        new QueryCommand({
+          TableName: POLLS_TABLE,
+          KeyConditionExpression: "PK = :pk AND begins_with(SK, :skPrefix)",
+          ExpressionAttributeValues: {
+            ":pk": `POLL#${pollId}`,
+            ":skPrefix": "OPTION#",
+          },
+        })
+      );
+
+      const options = optionsResult.Items.map((opt) => ({
+        id: opt.optionId,
+        text: opt.text,
+        votesCount: opt.votesCount,
+      }));
+
+      // Fetch user vote for this poll
+      const userVote = await ddbDocClient.send(
+        new GetCommand({
+          TableName: POLLS_TABLE,
+          Key: { PK: `POLL#${pollId}`, SK: `VOTE#${userEmail}` },
+        })
+      );
+
+      polls.push({
+        pollId,
+        question: pollItem.question,
+        createdAt: pollItem.createdAt,
+        owner: pollItem.owner,
+        options,
+        userOption: userVote?.Item?.optionId || null,
+      });
+    }
+
+    return {
+      statusCode: 200,
+      body: JSON.stringify({
+        items: polls,
+        lastKey: pollsResult.LastEvaluatedKey || null,
+      }),
+    };
+  } catch (err) {
+    console.error("Error fetching polls by owner:", err);
+    return {
+      statusCode: 500,
+      body: JSON.stringify({ error: err.message }),
+    };
+  }
+};
 // Main dispatcher
 export const pollsHandler = async (event) => {
   if (event.httpMethod === "POST") {
@@ -356,11 +554,17 @@ export const pollsHandler = async (event) => {
   }
 
   if (event.httpMethod === "GET" && event.resource === "/pollsAuth") {
-    return includeHeader(await authListPolls(event))
+    return includeHeader(await authListPolls(event));
   }
 
   if (event.httpMethod === "GET" && event.resource === "/pollsAuth/{pollId}") {
-    return includeHeader(await authGetPoll(event))
+    return includeHeader(await authGetPoll(event));
+  }
+  if (event.httpMethod === "DELETE" && event.resource === "/polls/{pollId}") {
+    return includeHeader(await deletePollHandler(event));
+  }
+  if (event.httpMethod === "GET" && event.resource === "/myPolls") {
+    return includeHeader(await getMyPollsHandler(event));
   }
 
   return includeHeader({
