@@ -20,9 +20,7 @@ export class VotingAppBackendStack extends cdk.Stack {
       tableName: "Polls",
       partitionKey: { name: "PK", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "SK", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PROVISIONED,
-      readCapacity: 5,
-      writeCapacity: 5,
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
       removalPolicy: cdk.RemovalPolicy.DESTROY,
     });
     pollsTable.addGlobalSecondaryIndex({
@@ -30,26 +28,20 @@ export class VotingAppBackendStack extends cdk.Stack {
       partitionKey: { name: "GSI1PK", type: dynamodb.AttributeType.STRING },
       sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING },
       projectionType: dynamodb.ProjectionType.ALL,
-      readCapacity: 5,
-      writeCapacity: 5,
+      
     });
     pollsTable.addGlobalSecondaryIndex({
       indexName: "PollsByOwner-index",
       partitionKey: { name: "GSI2PK", type: dynamodb.AttributeType.STRING }, // OWNER#<email>
       sortKey: { name: "createdAt", type: dynamodb.AttributeType.STRING }, // for sorting
       projectionType: dynamodb.ProjectionType.ALL,
-      readCapacity: 5,
-      writeCapacity: 5,
     });
 
     // Table to store active WebSocket connections
     const connectionsTable = new dynamodb.Table(this, "ConnectionsTable", {
       tableName: "Connections",
       partitionKey: { name: "PK", type: dynamodb.AttributeType.STRING },
-      billingMode: dynamodb.BillingMode.PROVISIONED,
-      readCapacity: 5,
-      writeCapacity: 5,
-      removalPolicy: cdk.RemovalPolicy.DESTROY,
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
     });
 
     // lambda layer to include dependencies
