@@ -9,6 +9,8 @@ The backend supports:
 - Authentication via **Amazon Cognito**  
 
 ---
+## Architecture
+![project architecture](architecture.png)
 
 ## 🚀 Prerequisites
 
